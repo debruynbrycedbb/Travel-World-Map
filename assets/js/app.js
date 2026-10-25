@@ -34,6 +34,7 @@ function normalizeUrl(u) {
 }
 function safeImageSrc(src) {
   if (/^data:image\//i.test(src)) return src;
+  if (/^assets\/images\/[\w\-./% ]+$/i.test(src) && !src.includes('..')) return src; // photos shipped with the site
   return normalizeUrl(src);
 }
 // Accepts "41.3874, 2.1686", "41.3874 2.1686" or a Google / Apple / OpenStreetMap link.
@@ -166,6 +167,7 @@ function sanitizeEntry(raw) {
     links: Array.isArray(raw.links) ? raw.links.map(l => ({ label: String(l.label || ''), url: normalizeUrl(l.url) })).filter(l => l.url) : [],
     images: Array.isArray(raw.images) ? raw.images.map(i => ({ src: safeImageSrc(i.src) })).filter(i => i.src) : [],
     example: !!raw.example,
+    ...(raw.site ? { site: true, siteRev: num(raw.siteRev) || 1, siteStamp: num(raw.siteStamp) } : {}),
     createdAt: num(raw.createdAt) || Date.now(),
     updatedAt: num(raw.updatedAt) || Date.now(),
   };
@@ -1223,6 +1225,43 @@ async function clearExamples() {
   toast(`Removed ${ids.length} example entries`);
 }
 
+// ---------------------------------------------------------------- entries shipped with the site
+// assets/data/entries.json holds entries published in the repo, so they show for every visitor.
+// Each one is copied into the browser's storage once; after that it can be edited or deleted like
+// any other entry. When the repo version gets a higher "rev", unedited copies are refreshed.
+// Deleted ones stay deleted.
+const SEEN_KEY = 'travel-world-map:site-entries';
+async function mergeSiteEntries() {
+  let site;
+  try {
+    const res = await fetch('assets/data/entries.json', { cache: 'no-cache' });
+    if (!res.ok) return;
+    site = await res.json();
+  } catch { return; }
+  const list = Array.isArray(site) ? site : site?.entries;
+  if (!Array.isArray(list)) return;
+  let seen = {};
+  try { seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}') || {}; } catch { /* storage blocked */ }
+  const toWrite = [];
+  for (const raw of list) {
+    const rev = typeof raw.rev === 'number' ? raw.rev : 1;
+    const stamp = Date.parse(raw.date || '') || Date.now();
+    const e = sanitizeEntry({ ...raw, site: true, siteRev: rev, siteStamp: stamp, createdAt: stamp, updatedAt: stamp });
+    if (!e) continue;
+    const local = state.entries.get(e.id);
+    if (!(e.id in seen)) {
+      if (!local) toWrite.push(e);
+    } else if (rev > seen[e.id] && local && local.updatedAt === local.siteStamp) {
+      toWrite.push(e); // repo copy changed and you haven't edited yours
+    }
+    seen[e.id] = Math.max(rev, seen[e.id] || 0);
+  }
+  try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch { /* storage blocked */ }
+  if (!toWrite.length) return;
+  toWrite.forEach(e => state.entries.set(e.id, e));
+  try { await state.store.putMany(toWrite); } catch (err) { console.error(err); }
+}
+
 // ---------------------------------------------------------------- boot
 async function boot() {
   let topo, meta;
@@ -1250,6 +1289,8 @@ async function boot() {
   try {
     (await state.store.all()).forEach(raw => { const e = sanitizeEntry(raw); if (e) state.entries.set(e.id, e); });
   } catch (err) { console.error(err); }
+
+  await mergeSiteEntries();
 
   $('#storage-note').textContent = state.store.kind === 'indexeddb'
     ? 'Saved in this browser. Export a backup to keep a copy or move it to another device.'
