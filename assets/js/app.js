@@ -1,7 +1,7 @@
 /* global d3 */
 import { openStore } from './store.js';
 import { createMap } from './map.js';
-import { EXAMPLES } from './examples.js';
+import { GitHubStore, loadConfig, saveConfig, clearConfig, guessRepo, DATA_PATH, UPLOAD_DIR, dataUrlToBase64 } from './github.js';
 
 // ---------------------------------------------------------------- constants
 const TYPES = {
@@ -103,7 +103,9 @@ function compressImage(file, max = 1600, quality = 0.84) {
 
 // ---------------------------------------------------------------- state
 const state = {
-  store: null,
+  gh: null,             // GitHubStore when this device is connected
+  legacy: [],           // entries found in this browser's old local storage
+  legacyStore: null,
   entries: new Map(),
   meta: {},
   map: null,
@@ -130,26 +132,93 @@ function allTags() {
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
-// ---------------------------------------------------------------- persistence
+// ---------------------------------------------------------------- persistence (GitHub)
+// With a GitHub connection every change is committed to the repository (see github.js).
+// Without one the site is view-only and shows what is published on GitHub Pages.
+const localPhotos = new Map(); // repo path -> data URL, so new photos show before GitHub serves them
+
+function imgSrc(src) {
+  if (localPhotos.has(src)) return localPhotos.get(src);
+  if (state.gh && src.startsWith(UPLOAD_DIR)) return state.gh.rawUrl(src); // fresh uploads, before Pages rebuilds
+  return src;
+}
+function requireConnection(then) {
+  if (state.gh) return true;
+  openConnect({ then });
+  return false;
+}
+// Newly added photos (data URLs) become files in the repo
+function photoFilesFor(e) {
+  const files = {};
+  e.images = (e.images || []).map(im => {
+    if (!/^data:image\//.test(im.src)) return im;
+    const path = `${UPLOAD_DIR}${e.id.replace(/[^\w-]/g, '').slice(0, 16)}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+    files[path] = dataUrlToBase64(im.src);
+    localPhotos.set(path, im.src);
+    return { src: path };
+  });
+  return files;
+}
+// Photos removed from an entry while editing are removed from the repo too
+function removedPhotos(old, list) {
+  const used = new Set(list.flatMap(e => (e.images || []).map(i => i.src)));
+  const files = {};
+  (old?.images || []).map(i => i.src).filter(src => src.startsWith('assets/images/') && !used.has(src)).forEach(src => { files[src] = null; });
+  return files;
+}
+function applyRemote(list) {
+  state.entries = new Map(list.map(sanitizeEntry).filter(Boolean).map(e => [e.id, e]));
+}
+async function persist(change, revert) {
+  toast('Saving to GitHub…', null, { sticky: true });
+  try {
+    const list = await state.gh.commit(change);
+    applyRemote(list); // also picks up changes made on other devices
+    refreshAll();
+    return true;
+  } catch (err) {
+    console.error(err);
+    revert();
+    refreshAll();
+    toast(`Not saved. ${err.message || 'GitHub didn’t accept the change.'}`, null, { long: true });
+    return false;
+  }
+}
 async function saveEntry(e) {
+  if (!requireConnection()) return false;
   e.updatedAt = Date.now();
+  const prev = state.entries.get(e.id) || null;
+  const files = photoFilesFor(e);
   state.entries.set(e.id, e);
-  try { await state.store.put(e); }
-  catch (err) { console.error(err); toast('Could not save to this browser’s storage. Export a backup to keep your changes.'); }
   refreshAll();
+  return persist(current => {
+    const old = current.find(x => x.id === e.id);
+    const list = old ? current.map(x => (x.id === e.id ? e : x)) : [...current, e];
+    return { entries: list, files: { ...removedPhotos(old, list), ...files }, message: `${old ? 'Update' : 'Add'} “${e.title}”` };
+  }, () => { if (prev) state.entries.set(e.id, prev); else state.entries.delete(e.id); });
 }
 async function deleteEntry(id) {
   const e = state.entries.get(id);
-  if (!e) return;
+  if (!e || !requireConnection()) return;
   state.entries.delete(id);
-  try { await state.store.remove(id); } catch (err) { console.error(err); }
   refreshAll();
-  toast(`Deleted “${e.title}”`, { label: 'Undo', run: () => saveEntry(e) });
+  // photos stay in the repo so Undo can bring the entry back complete
+  const ok = await persist(current => ({ entries: current.filter(x => x.id !== id), message: `Delete “${e.title}”` }),
+    () => state.entries.set(id, e));
+  if (ok) toast(`Deleted “${e.title}”`, { label: 'Undo', run: async () => { if (await saveEntry(e)) toast(`Restored “${e.title}”`); } });
 }
-async function putMany(list) {
+async function putMany(list, message) {
+  if (!requireConnection()) return false;
+  const files = {};
+  list.forEach(e => Object.assign(files, photoFilesFor(e)));
+  const prev = new Map(state.entries);
   list.forEach(e => state.entries.set(e.id, e));
-  try { await state.store.putMany(list); } catch (err) { console.error(err); toast('Could not write to storage.'); }
   refreshAll();
+  return persist(current => {
+    const m = new Map(current.map(x => [x.id, x]));
+    list.forEach(e => m.set(e.id, e));
+    return { entries: [...m.values()], files, message };
+  }, () => { state.entries = prev; });
 }
 
 function sanitizeEntry(raw) {
@@ -167,10 +236,8 @@ function sanitizeEntry(raw) {
     tags: Array.isArray(raw.tags) ? [...new Set(raw.tags.map(t => String(t).trim().toLowerCase()).filter(Boolean))] : [],
     links: Array.isArray(raw.links) ? raw.links.map(l => ({ label: String(l.label || ''), url: normalizeUrl(l.url) })).filter(l => l.url) : [],
     images: Array.isArray(raw.images) ? raw.images.map(i => ({ src: safeImageSrc(i.src) })).filter(i => i.src) : [],
-    example: !!raw.example,
-    ...(raw.site ? { site: true, siteRev: num(raw.siteRev) || 1, siteStamp: num(raw.siteStamp) } : {}),
-    createdAt: num(raw.createdAt) || Date.now(),
-    updatedAt: num(raw.updatedAt) || Date.now(),
+    createdAt: num(raw.createdAt) || Date.parse(raw.date || '') || Date.now(),
+    updatedAt: num(raw.updatedAt) || Date.parse(raw.date || '') || Date.now(),
   };
 }
 
@@ -279,7 +346,7 @@ function cardHTML(e, { showCountry = false } = {}) {
   const tags = (e.tags || []).slice(0, 3).map(t => `<span class="tag">#${esc(t)}</span>`).join('');
   return `<button type="button" class="card" data-entry="${esc(e.id)}">
     <div class="card-media" ${cover ? '' : `style="${placeholderStyle(e)}"`}>
-      ${cover ? `<img src="${esc(cover)}" alt="" loading="lazy">` : `<div class="card-ph">${esc(fmtCoords(e.lat, e.lng) || (e.links?.[0] ? domainOf(e.links[0].url) : ''))}</div>`}
+      ${cover ? `<img src="${esc(imgSrc(cover))}" alt="" loading="lazy">` : `<div class="card-ph">${esc(fmtCoords(e.lat, e.lng) || (e.links?.[0] ? domainOf(e.links[0].url) : ''))}</div>`}
       <span class="card-type"><span class="dot t-${e.type}"></span>${TYPES[e.type].label}</span>
     </div>
     <div class="card-body">
@@ -432,8 +499,8 @@ function renderDetail() {
   const coords = fmtCoords(e.lat, e.lng);
   const gallery = imgs.length ? `
     <div>
-      <div class="gallery-main"><img src="${esc(imgs[i].src)}" alt="${esc(e.title)} photo ${i + 1} of ${imgs.length}"></div>
-      ${imgs.length > 1 ? `<div class="gallery-thumbs">${imgs.map((im, n) => `<button type="button" data-img="${n}" aria-label="Show photo ${n + 1}" aria-current="${n === i}"><img src="${esc(im.src)}" alt=""></button>`).join('')}</div>` : ''}
+      <div class="gallery-main"><img src="${esc(imgSrc(imgs[i].src))}" alt="${esc(e.title)} photo ${i + 1} of ${imgs.length}"></div>
+      ${imgs.length > 1 ? `<div class="gallery-thumbs">${imgs.map((im, n) => `<button type="button" data-img="${n}" aria-label="Show photo ${n + 1}" aria-current="${n === i}"><img src="${esc(imgSrc(im.src))}" alt=""></button>`).join('')}</div>` : ''}
     </div>` : '';
   const meta = [
     e.country ? `<button type="button" class="country-link" data-country="${esc(e.country)}">${countryFlag(e.country)} ${esc(countryName(e.country))}</button>` : '<span>No country yet</span>',
@@ -471,6 +538,7 @@ function renderDetail() {
 
 // ---------------------------------------------------------------- editor
 function openEditor(entry = null, preset = {}) {
+  if (!requireConnection(() => openEditor(entry, preset))) return;
   const d = entry ? structuredClone(entry) : {
     id: uid(), type: 'place', title: '', country: null, location: '', lat: null, lng: null,
     notes: '', tags: [], links: [], images: [], createdAt: Date.now(), updatedAt: Date.now(), ...preset,
@@ -581,7 +649,7 @@ function renderEdImages() {
   const { d } = state.editor;
   $('#ed-images').innerHTML = d.images.map((im, i) => `
     <div class="img-tile">
-      <img src="${esc(im.src)}" alt="Image ${i + 1}">
+      <img src="${esc(imgSrc(im.src))}" alt="Image ${i + 1}">
       ${i === 0 ? '<span class="cover-badge">Cover</span>' : ''}
       <div class="img-actions">
         ${i > 0 ? `<button type="button" data-cover-img="${i}" aria-label="Use image ${i + 1} as cover" title="Use as cover">★</button>` : ''}
@@ -669,8 +737,9 @@ async function saveEditor() {
   const isNew = ed.isNew;
   $('#editor-dialog').close();
   state.editor = null;
-  await saveEntry(d);
-  toast(isNew ? `Saved “${d.title}”` : 'Changes saved', d.country && state.country !== d.country ? { label: `Open ${countryName(d.country)}`, run: () => go('#/country/' + d.country) } : null);
+  if (await saveEntry(d)) {
+    toast(isNew ? `Saved “${d.title}”` : 'Changes saved', d.country && state.country !== d.country ? { label: `Open ${countryName(d.country)}`, run: () => go('#/country/' + d.country) } : null);
+  }
 }
 function rerenderEditorKeepScroll() {
   const body = $('#editor-dialog .dialog-body');
@@ -730,6 +799,7 @@ function endPick(result) {
 
 // ---------------------------------------------------------------- quick save
 function openQuickSave(preset = {}) {
+  if (!requireConnection(() => openQuickSave(preset))) return;
   const url = preset.url || '';
   const dlg = $('#quick-dialog');
   const qs = { type: preset.type || 'inspiration' };
@@ -790,6 +860,7 @@ function readQuickSave() {
 }
 
 async function quickSaveUrl(raw) {
+  if (!requireConnection()) return false;
   const url = normalizeUrl(raw);
   if (!url) { toast('That isn’t a valid web address.'); return false; }
   const coords = parseCoords(raw);
@@ -799,7 +870,7 @@ async function quickSaveUrl(raw) {
     location: '', lat: coords?.lat ?? null, lng: coords?.lng ?? null, notes: '', tags: [],
     links: [{ label: '', url }], images: [], createdAt: Date.now(), updatedAt: Date.now(),
   };
-  await saveEntry(e);
+  if (!(await saveEntry(e))) return false;
   toast(`Saved “${e.title}”`, { label: 'Edit', run: () => openEditor(state.entries.get(e.id)) });
   return true;
 }
@@ -823,7 +894,7 @@ function confirmDialog({ title, body, ok = 'Delete' }) {
 }
 
 let toastTimer;
-function toast(msg, action = null) {
+function toast(msg, action = null, { sticky = false, long = false } = {}) {
   const el = $('#toast');
   el.innerHTML = `<span>${esc(msg)}</span>${action ? `<button type="button" class="text-btn">${esc(action.label)}</button>` : ''}`;
   if (action) el.querySelector('button').onclick = () => { el.hidden = true; action.run(); };
@@ -833,7 +904,7 @@ function toast(msg, action = null) {
   if (openDlg && el.parentNode !== openDlg) openDlg.appendChild(el);
   else if (!openDlg && el.parentNode !== $('#app')) $('#app').appendChild(el);
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, action ? 6000 : 3200);
+  if (!sticky) toastTimer = setTimeout(() => { el.hidden = true; }, action || long ? 7000 : 3200);
 }
 
 // ---------------------------------------------------------------- search
@@ -924,8 +995,7 @@ async function importBackup(file) {
     const raw = Array.isArray(data) ? data : data.entries;
     if (!Array.isArray(raw)) throw new Error('no entries');
     const list = raw.map(sanitizeEntry).filter(Boolean);
-    await putMany(list);
-    toast(`Imported ${list.length} entr${list.length === 1 ? 'y' : 'ies'}`);
+    if (await putMany(list, `Import ${list.length} entries from a backup`)) toast(`Imported ${list.length} entr${list.length === 1 ? 'y' : 'ies'}`);
   } catch {
     toast('That file isn’t a Travel World Map backup.');
   }
@@ -961,17 +1031,16 @@ function bindEvents() {
   menu.addEventListener('click', async (ev) => {
     const a = ev.target.closest('[data-action]')?.dataset.action; if (!a) return;
     menu.hidden = true;
+    if (a === 'github') openConnect();
     if (a === 'export') exportBackup();
-    if (a === 'import') $('#import-file').click();
-    if (a === 'examples') loadExamples();
-    if (a === 'clear-examples') clearExamples();
+    if (a === 'import') { if (requireConnection(() => $('#import-file').click())) $('#import-file').click(); }
+    if (a === 'upload-local') uploadLocalEntries();
   });
   $('#import-file').onchange = (ev) => { const f = ev.target.files[0]; if (f) importBackup(f); ev.target.value = ''; };
 
   $('#onboard').addEventListener('click', (ev) => {
     const a = ev.target.closest('[data-onboard]')?.dataset.onboard;
     if (a === 'save') openQuickSave({ type: 'place' });
-    if (a === 'examples') loadExamples();
   });
 
   // Search
@@ -1174,8 +1243,7 @@ function bindEvents() {
     const e = readQuickSave();
     if (!e) return;
     qd.close();
-    await saveEntry(e);
-    toast(`Saved “${e.title}”`, { label: 'Edit', run: () => openEditor(state.entries.get(e.id)) });
+    if (await saveEntry(e)) toast(`Saved “${e.title}”`, { label: 'Edit', run: () => openEditor(state.entries.get(e.id)) });
   });
   qd.addEventListener('input', (ev) => {
     if (ev.target.id === 'qs-url') {
@@ -1187,6 +1255,16 @@ function bindEvents() {
     }
     $('#qs-error').textContent = '';
   });
+
+  // GitHub connect dialog
+  const gd = $('#github-dialog');
+  gd.addEventListener('click', (ev) => {
+    const t = ev.target;
+    if (t === gd || t.closest('[data-dialog-close]')) { gd.close(); return; }
+    if (t.closest('[data-gh-disconnect]')) { gd.close(); disconnectGitHub(); }
+  });
+  gd.addEventListener('submit', (ev) => { ev.preventDefault(); connectGitHub(); });
+  gd.addEventListener('input', () => { const e = $('#gh-error'); if (e) e.textContent = ''; });
 
   window.addEventListener('hashchange', route);
   window.addEventListener('resize', debounce(() => {
@@ -1210,57 +1288,151 @@ function tooltipAt(event, html) {
   tip.style.left = x + 'px'; tip.style.top = y + 'px';
 }
 
-// ---------------------------------------------------------------- examples
-async function loadExamples() {
-  const now = Date.now();
-  const list = EXAMPLES.map((e, i) => sanitizeEntry({ ...e, id: 'example-' + i, example: true, tags: [...(e.tags || []), 'example'], createdAt: now - i * 60000, updatedAt: now - i * 60000 })).filter(Boolean);
-  await putMany(list);
-  toast(`Added ${list.length} example entries`, { label: 'Remove', run: clearExamples });
-}
-async function clearExamples() {
-  const ids = entriesArr().filter(e => e.example).map(e => e.id);
-  if (!ids.length) { toast('No example entries to remove'); return; }
-  ids.forEach(id => state.entries.delete(id));
-  try { await Promise.all(ids.map(id => state.store.remove(id))); } catch (err) { console.error(err); }
-  refreshAll();
-  toast(`Removed ${ids.length} example entries`);
+// ---------------------------------------------------------------- GitHub connection
+function updateStorageNote() {
+  const gh = state.gh;
+  $('#storage-note').textContent = gh
+    ? `Saving to GitHub: ${gh.owner}/${gh.repo}. Visitors see changes about a minute after you save.`
+    : 'View only. Connect GitHub to save changes.';
+  $('[data-action="github"]').textContent = gh ? 'Saving to GitHub ✓' : 'Connect GitHub to save…';
+  $('[data-action="upload-local"]').hidden = !(gh && state.legacy.length);
+  $('[data-action="upload-local"]').textContent = `Upload ${state.legacy.length} entr${state.legacy.length === 1 ? 'y' : 'ies'} saved only in this browser`;
 }
 
-// ---------------------------------------------------------------- entries shipped with the site
-// assets/data/entries.json holds entries published in the repo, so they show for every visitor.
-// Each one is copied into the browser's storage once; after that it can be edited or deleted like
-// any other entry. When the repo version gets a higher "rev", unedited copies are refreshed.
-// Deleted ones stay deleted.
-const SEEN_KEY = 'travel-world-map:site-entries';
-async function mergeSiteEntries() {
-  let site;
-  try {
-    const res = await fetch('assets/data/entries.json', { cache: 'no-cache' });
-    if (!res.ok) return;
-    site = await res.json();
-  } catch { return; }
-  const list = Array.isArray(site) ? site : site?.entries;
-  if (!Array.isArray(list)) return;
-  let seen = {};
-  try { seen = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}') || {}; } catch { /* storage blocked */ }
-  const toWrite = [];
-  for (const raw of list) {
-    const rev = typeof raw.rev === 'number' ? raw.rev : 1;
-    const stamp = Date.parse(raw.date || '') || Date.now();
-    const e = sanitizeEntry({ ...raw, site: true, siteRev: rev, siteStamp: stamp, createdAt: stamp, updatedAt: stamp });
-    if (!e) continue;
-    const local = state.entries.get(e.id);
-    if (!(e.id in seen)) {
-      if (!local) toWrite.push(e);
-    } else if (rev > seen[e.id] && local && local.updatedAt === local.siteStamp) {
-      toWrite.push(e); // repo copy changed and you haven't edited yours
-    }
-    seen[e.id] = Math.max(rev, seen[e.id] || 0);
+function openConnect({ then = null } = {}) {
+  const dlg = $('#github-dialog');
+  dlg._then = then;
+  const cfg = loadConfig() || {};
+  const guess = guessRepo();
+  const repoText = cfg.owner ? `${cfg.owner}/${cfg.repo}` : (guess.owner ? `${guess.owner}/${guess.repo}` : '');
+  const repoName = (cfg.repo || guess.repo || 'your repository');
+  const close = `<button type="button" class="icon-btn small" data-dialog-close aria-label="Close">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></button>`;
+  if (state.gh) {
+    const g = state.gh;
+    dlg.innerHTML = `
+      <div class="dialog-head"><h2>Saving to GitHub</h2>${close}</div>
+      <div class="dialog-body"><div class="form-grid">
+        <p class="prose">Every change is saved as a commit to <b>${esc(g.owner)}/${esc(g.repo)}</b> (branch <span class="mono">${esc(g.branch)}</span>) in <span class="mono">${esc(DATA_PATH)}</span>. Photos go in <span class="mono">${esc(UPLOAD_DIR)}</span>.</p>
+        <p class="prose">Visitors see your changes about a minute after you save, once GitHub Pages has updated. You can see or undo any change in the repository’s commit history.</p>
+      </div></div>
+      <div class="dialog-foot">
+        <button type="button" class="text-btn danger" data-gh-disconnect>Disconnect this device</button>
+        <span class="spacer"></span>
+        <button type="button" class="pill-btn pill-accent" data-dialog-close>Done</button>
+      </div>`;
+  } else {
+    dlg.innerHTML = `
+      <form id="gh-form" novalidate style="display:contents" autocomplete="off">
+      <div class="dialog-head"><h2>Connect GitHub to save</h2>${close}</div>
+      <div class="dialog-body"><div class="form-grid">
+        <p class="prose">Entries are saved in your GitHub repository, so they’re the same on every device and anyone who opens the site sees them. Only the site’s owner can save. Connect once on each device you edit from.</p>
+        <ol class="steps">
+          <li>On GitHub, <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">create a fine-grained token ↗</a>. Give it a name and an expiry date.</li>
+          <li>Under <b>Repository access</b>, choose <b>Only select repositories</b> and pick <b>${esc(repoName)}</b>.</li>
+          <li>Under <b>Permissions</b>, add <b>Contents</b> and set it to <b>Read and write</b>.</li>
+          <li>Click <b>Generate token</b>, copy it and paste it below.</li>
+        </ol>
+        <div class="row">
+          <label class="field"><span class="field-label">Repository</span>
+            <input class="field-input mono" id="gh-repo" value="${esc(repoText)}" placeholder="owner/repository" spellcheck="false"></label>
+          <label class="field" style="flex:0 1 140px"><span class="field-label">Branch</span>
+            <input class="field-input mono" id="gh-branch" value="${esc(cfg.branch || 'main')}" spellcheck="false"></label>
+        </div>
+        <label class="field"><span class="field-label">Access token</span>
+          <input class="field-input mono" id="gh-token" type="password" placeholder="github_pat_…" spellcheck="false" autocomplete="off"></label>
+        <span class="field-hint">The token is kept only in this browser. Anyone who has it can change this repository, so keep it private. You can revoke it on GitHub at any time.</span>
+        <span class="field-error" id="gh-error" role="alert"></span>
+      </div></div>
+      <div class="dialog-foot">
+        <span class="spacer"></span>
+        <button type="button" class="pill-btn" data-dialog-close>Cancel</button>
+        <button type="submit" class="pill-btn pill-accent" id="gh-submit">Connect</button>
+      </div>
+      </form>`;
   }
-  try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch { /* storage blocked */ }
-  if (!toWrite.length) return;
-  toWrite.forEach(e => state.entries.set(e.id, e));
-  try { await state.store.putMany(toWrite); } catch (err) { console.error(err); }
+  if (!dlg.open) dlg.showModal();
+  setTimeout(() => $('#gh-token')?.focus(), 30);
+}
+
+async function connectGitHub() {
+  const dlg = $('#github-dialog');
+  const err = (m) => { $('#gh-error').textContent = m; };
+  const repoRaw = $('#gh-repo').value.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  const [owner, repo] = repoRaw.split('/');
+  const branch = $('#gh-branch').value.trim() || 'main';
+  const token = $('#gh-token').value.trim();
+  if (!owner || !repo) return err('Enter the repository as owner/repository, e.g. debruynbrycedbb/Travel-World-Map.');
+  if (!token) return err('Paste the access token you created on GitHub.');
+  const btn = $('#gh-submit'); btn.disabled = true; btn.textContent = 'Connecting…';
+  const gh = new GitHubStore({ owner, repo, branch, token });
+  try {
+    const list = await gh.load();
+    const stored = saveConfig({ owner, repo, branch, token });
+    state.gh = gh;
+    applyRemote(list);
+    refreshAll();
+    updateStorageNote();
+    const then = dlg._then;
+    dlg.close();
+    toast(stored ? 'Connected. Changes now save to GitHub.' : 'Connected for this visit only: this browser blocks saving the token.', null, { long: !stored });
+    then?.();
+    offerLegacyUpload();
+  } catch (e) {
+    err(e.message || 'Couldn’t connect to GitHub.');
+    btn.disabled = false; btn.textContent = 'Connect';
+  }
+}
+
+async function disconnectGitHub() {
+  const ok = await confirmDialog({ title: 'Disconnect this device?', body: 'The access token is removed from this browser and the site becomes view-only here. Your entries stay on GitHub.', ok: 'Disconnect' });
+  if (!ok) return;
+  clearConfig();
+  state.gh = null;
+  updateStorageNote();
+  await loadPublished();
+  refreshAll();
+  toast('Disconnected. This browser is now view-only.');
+}
+
+// Entries saved in this browser by the earlier version of the site
+async function findLegacyEntries() {
+  try {
+    const store = await openStore();
+    if (store.kind !== 'indexeddb') return [];
+    state.legacyStore = store;
+    return (await store.all()).filter(e => !e.site && !e.example).map(sanitizeEntry).filter(Boolean);
+  } catch { return []; }
+}
+function offerLegacyUpload() {
+  const pending = state.legacy.filter(e => !state.entries.has(e.id));
+  state.legacy = pending;
+  updateStorageNote();
+  if (state.gh && pending.length) {
+    toast(`${pending.length} entr${pending.length === 1 ? 'y is' : 'ies are'} saved only in this browser`, { label: 'Upload to GitHub', run: uploadLocalEntries });
+  }
+}
+async function uploadLocalEntries() {
+  const list = state.legacy;
+  if (!list.length || !requireConnection()) return;
+  if (await putMany(list.map(e => ({ ...e })), `Add ${list.length} entries saved in a browser`)) {
+    try { await Promise.all(list.map(e => state.legacyStore.remove(e.id))); } catch { /* ignore */ }
+    state.legacy = [];
+    updateStorageNote();
+    toast(`Uploaded ${list.length} entr${list.length === 1 ? 'y' : 'ies'} to GitHub`);
+  }
+}
+
+async function loadPublished() {
+  try {
+    const res = await fetch(DATA_PATH, { cache: 'no-cache' });
+    if (!res.ok) throw new Error(res.status);
+    const data = await res.json();
+    applyRemote(Array.isArray(data) ? data : (data.entries || []));
+  } catch (err) {
+    console.error(err);
+    state.entries = new Map();
+  }
 }
 
 // ---------------------------------------------------------------- boot
@@ -1286,19 +1458,19 @@ async function boot() {
   dl.innerHTML = Object.values(meta).map(m => m.name).sort((a, b) => a.localeCompare(b)).map(n => `<option value="${esc(n)}"></option>`).join('');
   document.body.appendChild(dl);
 
-  state.store = await openStore();
-  try {
-    (await state.store.all()).forEach(raw => { const e = sanitizeEntry(raw); if (e) state.entries.set(e.id, e); });
-  } catch (err) { console.error(err); }
-
-  await mergeSiteEntries();
-
-  $('#storage-note').textContent = state.store.kind === 'indexeddb'
-    ? 'Saved in this browser. Export a backup to keep a copy or move it to another device.'
-    : 'This browser is blocking storage, so changes last only until you close the page. Export a backup before leaving.';
+  let bootError = null;
+  const cfg = loadConfig();
+  if (cfg) {
+    const gh = new GitHubStore(cfg);
+    try { applyRemote(await gh.load()); state.gh = gh; }
+    catch (err) { bootError = err.message; }
+  }
+  if (!state.gh) await loadPublished();
+  state.legacy = await findLegacyEntries();
 
   state.map = createMap({
     svgEl: $('#map'),
+    canvasEl: $('#map-canvas'),
     topo,
     onCountryClick: (key) => go('#/country/' + key),
     onCountryHover: (key, event) => {
@@ -1318,8 +1490,10 @@ async function boot() {
   state.map.resize();
   bindEvents();
   refreshMap();
+  updateStorageNote();
   route();
-  if (state.store.kind !== 'indexeddb') toast('This browser is blocking storage. Export a backup before closing the page.');
+  if (bootError) toast(`View only for now. ${bootError}`, { label: 'Reconnect', run: () => openConnect() }, { long: true });
+  else offerLegacyUpload();
 }
 
 boot();

@@ -4,8 +4,9 @@ A personal world map for places to visit, things to do and things worth remember
 Click a country to open its page, save entries with photos, notes, tags and links, and
 keep a library of inspiration you can filter and search.
 
-It is a static site (HTML, CSS and JavaScript only), so it runs on GitHub Pages with no
-server or build step.
+It is a static site (HTML, CSS and JavaScript only) hosted on GitHub Pages. Everything you
+save is stored in this repository, so it is the same on every device and visible to anyone
+who opens the site.
 
 ## Features
 
@@ -19,24 +20,51 @@ server or build step.
   - Set the marker by typing `lat, lng`, pasting a Google Maps / OpenStreetMap link,
     searching by name (**Find**), or clicking the exact spot (**Pick on map**).
   - Photos can be uploaded, dropped, pasted or added by image address. Uploads are
-    resized to 1600 px so storage stays small. The first photo is the cover.
+    resized to 1600 px. The first photo is the cover.
 - **Library**: every entry in one grid. Paste a link and press Enter to save it instantly;
   links without a country stay in Inspiration until you assign one. Filter by type,
   region, country and tag; sort by date, name or country.
 - **Quick save from any site**: in the Library, drag **＋ Save to map** to your bookmarks
   bar. Clicking it on any page opens this site with that page’s link and title filled in.
-- **Search**: press `/` anywhere to search countries, saved entries and tags.
-- **Storage and backups**: entries are saved in your browser (IndexedDB). Use
-  **⋯ → Export backup** to download everything as JSON, and **Import backup** to restore
-  it or move it to another browser or device.
+- **Search**: press `/` anywhere to search countries, saved entries and tags (accents
+  don’t matter, so “medulas” finds Las Médulas).
+
+## Saving (stored in this repository)
+
+All entries live in `assets/data/entries.json`; uploaded photos go in
+`assets/images/uploads/`. When you save, add, edit or delete on the site, it makes a commit
+to this repository through the GitHub API. Visitors see the change about a minute later,
+once GitHub Pages has rebuilt. Every change is in the commit history, so anything can be
+looked up or restored.
+
+Anyone can view the site. To edit, connect each device you use once:
+
+1. On GitHub open **Settings → Developer settings → Personal access tokens →
+   Fine-grained tokens → Generate new token**
+   (direct link: <https://github.com/settings/personal-access-tokens/new>).
+2. Give it a name and an expiry date.
+3. **Repository access**: *Only select repositories* → `Travel-World-Map`.
+4. **Permissions**: add **Contents** and set it to **Read and write**. Nothing else is needed.
+5. Generate the token and copy it.
+6. On the site, click **Save** (or **⋯ → Connect GitHub to save**), paste the token and
+   click **Connect**.
+
+The token is stored only in that browser. Anyone who has it can change this repository,
+so keep it private. Revoke it on GitHub at any time; **⋯ → Saving to GitHub → Disconnect
+this device** removes it from the browser.
+
+If two devices save at the same moment, the second save is applied on top of the first,
+so nothing is lost.
+
+**⋯ → Export backup** downloads everything as JSON; **Import backup** commits a backup
+file back into the repository.
 
 ## Publish on GitHub Pages
 
-1. Push these files to the `main` branch of this repository.
-2. On GitHub open **Settings → Pages**.
-3. Under **Build and deployment**, set **Source** to *Deploy from a branch*, choose
+1. On GitHub open **Settings → Pages**.
+2. Under **Build and deployment**, set **Source** to *Deploy from a branch*, choose
    `main` and `/ (root)`, then **Save**.
-4. After a minute the site is live at
+3. After a minute the site is live at
    `https://debruynbrycedbb.github.io/Travel-World-Map/`.
 
 ## Run it on your computer
@@ -50,23 +78,10 @@ python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
-## Where your data lives
+## Entry format
 
-Everything you save is stored in the browser you saved it in, on that device. It is not
-uploaded anywhere and is not part of the repository, so the public site shows an empty
-map to anyone else. Clearing site data for the page deletes it, so export a backup now
-and then. To use the same collection on your phone and laptop, export on one and import
-on the other.
-
-## Entries published with the site
-
-Entries in `assets/data/entries.json` (photos in `assets/images/<country>/`) show for
-everyone who opens the site. On a visitor’s first visit each one is copied into their
-browser, after which it behaves like any other entry: it can be edited or deleted, and a
-deleted one does not come back. To change a published entry, edit it in `entries.json`
-and raise its `rev` number; visitors who haven’t edited their copy get the update.
-
-Each entry looks like this (`country` is the ISO 3166-1 numeric code, e.g. `724` Spain):
+Each entry in `assets/data/entries.json` looks like this (`country` is the ISO 3166-1
+numeric code, e.g. `724` Spain; `type` is `place`, `activity`, `memory` or `inspiration`):
 
 ```json
 {
@@ -74,26 +89,24 @@ Each entry looks like this (`country` is the ISO 3166-1 numeric code, e.g. `724`
   "country": "724", "location": "León", "lat": 42.45889, "lng": -6.76,
   "notes": "", "tags": [], "links": [],
   "images": [{ "src": "assets/images/spain/las-medulas.jpg" }],
-  "rev": 1, "date": "2026-10-25T13:00:00Z"
+  "createdAt": 1792933200000, "updatedAt": 1792933200000
 }
 ```
-
-`type` is one of `place`, `activity`, `memory` or `inspiration`.
 
 ## Files
 
 ```
-index.html                  page shell
-assets/css/styles.css       all styling (dark theme, layout, responsive rules)
-assets/js/app.js            routing, country pages, library, editor, search, backups
-assets/js/map.js            D3 world map: zoom, highlights, markers, pick-on-map
-assets/js/store.js          IndexedDB storage
-assets/js/examples.js       optional example entries (⋯ → Load example entries)
+index.html                       page shell
+assets/css/styles.css            all styling (dark theme, layout, responsive rules)
+assets/js/app.js                 routing, country pages, library, editor, search, backups
+assets/js/map.js                 world map: canvas drawing, zoom, highlights, markers, pick-on-map
+assets/js/github.js              saving: loads and commits entries through the GitHub API
+assets/js/store.js               reads entries left in a browser by the earlier version
+assets/data/entries.json         your entries
 assets/data/countries-50m.json   country borders (Natural Earth 1:50m, via world-atlas)
 assets/data/countries-meta.json  names, flags and regions per country
-assets/data/entries.json         entries published with the site (see above)
-assets/images/                   photos for those entries
-assets/vendor/              D3 v7 and topojson-client, included so no CDN is needed
+assets/images/                   photos
+assets/vendor/                   D3 v7 and topojson-client, included so no CDN is needed
 ```
 
 ## Credits

@@ -16,6 +16,7 @@
 <!--APP-START-->
 <div class="app" id="app">
   <div class="map-stage" id="map-stage">
+    <canvas id="map-canvas" class="map-canvas" aria-hidden="true"></canvas>
     <svg id="map" class="map" role="img" aria-label="World map. Click a country to open its page."></svg>
     <div class="map-loading" id="map-loading">Loading map…</div>
   </div>
@@ -48,10 +49,10 @@
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.5" cy="10" r="1.5" fill="currentColor"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/><circle cx="15.5" cy="10" r="1.5" fill="currentColor"/></svg>
         </button>
         <div class="menu" id="menu" role="menu" hidden>
+          <button type="button" role="menuitem" data-action="github">Connect GitHub to save…</button>
+          <button type="button" role="menuitem" data-action="upload-local" hidden>Upload entries saved only in this browser</button>
           <button type="button" role="menuitem" data-action="export">Export backup (.json)</button>
           <button type="button" role="menuitem" data-action="import">Import backup…</button>
-          <button type="button" role="menuitem" data-action="examples">Load example entries</button>
-          <button type="button" role="menuitem" data-action="clear-examples">Remove example entries</button>
           <div class="menu-note" id="storage-note"></div>
         </div>
         <input type="file" id="import-file" accept="application/json,.json" hidden>
@@ -77,7 +78,6 @@
     <p>Click any country to open its page and save places, things to do and things to remember. Saved countries light up.</p>
     <div class="onboard-actions">
       <button class="pill-btn pill-accent" type="button" data-onboard="save">Save something</button>
-      <button class="pill-btn" type="button" data-onboard="examples">Try example entries</button>
     </div>
   </div>
 
@@ -96,6 +96,7 @@
   <dialog class="dialog dialog-wide" id="editor-dialog" aria-label="Edit entry"></dialog>
   <dialog class="dialog" id="quick-dialog" aria-label="Quick save"></dialog>
   <dialog class="dialog dialog-small" id="confirm-dialog" aria-label="Confirm"></dialog>
+  <dialog class="dialog" id="github-dialog" aria-label="Saving to GitHub"></dialog>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 </div>
 <!--APP-END-->

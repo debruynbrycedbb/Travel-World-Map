@@ -3,7 +3,7 @@
 :root {
   --bg: #07060d;
   --bg-raise: #0e0c18;
-  --glass: rgba(16, 14, 28, 0.74);
+  --glass: rgba(16, 14, 28, 0.88);
   --glass-strong: rgba(14, 12, 24, 0.94);
   --line: rgba(196, 184, 255, 0.10);
   --line-strong: rgba(196, 184, 255, 0.20);
@@ -71,15 +71,17 @@ a { color: var(--accent-hi); }
     linear-gradient(90deg, rgba(150, 130, 255, 0.035) 1px, transparent 1px) 0 0 / 56px 56px,
     var(--bg);
 }
-.map { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
-.map:active { cursor: grabbing; }
-.map.picking, .map.picking .country { cursor: crosshair; }
+.map-canvas, .map { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.map { touch-action: none; cursor: grab; }
+.map.dragging { cursor: grabbing !important; }
+.map.picking { cursor: crosshair !important; }
 .map-loading {
   position: absolute; inset: 0; display: grid; place-items: center;
   color: var(--muted); font-size: 14px; letter-spacing: 0.04em;
 }
 .grain {
-  position: absolute; inset: 0; pointer-events: none; opacity: 0.06; mix-blend-mode: screen;
+  /* plain transparency instead of a blend mode, so the moving map doesn't have to be re-blended every frame */
+  position: absolute; inset: 0; pointer-events: none; opacity: 0.035;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -112,11 +114,11 @@ a { color: var(--accent-hi); }
 .pick-dot { fill: #fff; stroke: var(--accent); stroke-width: 2px; pointer-events: none; }
 
 /* ---------- Glass controls ---------- */
+/* Controls that float over the map use a near-opaque fill instead of a backdrop blur:
+   a blur has to be recomputed on every frame while the map moves underneath it. */
 .glass, .pill-btn, .icon-btn, .search, .mark, .map-filters, .menu, .tooltip, .onboard, .pick-banner, .toast {
   background: var(--glass);
   border: 1px solid var(--line-strong);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
 }
 
 .topbar {
@@ -272,7 +274,6 @@ a { color: var(--accent-hi); }
   width: min(540px, 100%);
   background: var(--glass-strong);
   border-left: 1px solid var(--line-strong);
-  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
   box-shadow: -30px 0 80px rgba(0, 0, 0, 0.5);
   animation: panel-in 260ms cubic-bezier(.2, .8, .2, 1);
 }
@@ -502,6 +503,14 @@ select.field-input option { background: #141221; }
 .link-list a:hover { border-color: rgba(182, 163, 255, 0.45); }
 .link-list .ll-label { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .link-list .ll-domain { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+/* GitHub dialog */
+.prose { margin: 0; color: var(--muted); font-size: 14.5px; line-height: 1.6; max-width: 65ch; }
+.prose b { color: var(--text); font-weight: 600; }
+.mono { font-family: var(--mono); font-size: 0.92em; }
+.steps { margin: 0; padding-left: 22px; display: grid; gap: 8px; color: var(--muted); font-size: 14px; line-height: 1.55; }
+.steps b { color: var(--text); font-weight: 600; }
+.steps li::marker { color: var(--accent-hi); font-family: var(--mono); font-size: 12.5px; }
 
 /* Toast */
 .toast {

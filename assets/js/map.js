@@ -1,94 +1,245 @@
 /* global d3, topojson */
-// Interactive world map: country shapes, glow on saved countries, destination markers,
-// zoom / drag, zoom-to-country and a "pick a location" mode for the entry editor.
+// Interactive world map.
+// Countries are drawn on a <canvas> (fast to redraw while dragging and zooming); markers and
+// the pick dot live in an SVG layer on top, which also receives all mouse/touch input.
+// Both layers are updated in the same animation frame so they never drift apart.
 
 export function countryKey(geom) {
   return geom.id ? String(geom.id) : 'n-' + String(geom.properties.name).toLowerCase().replace(/[^a-z]+/g, '-');
 }
 
-export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarkerClick, onMarkerHover, onPick }) {
+// Map colours (match the tokens in styles.css)
+const C = {
+  land: '#17151f',
+  landLine: '#353150',
+  landHover: '#221e33',
+  saved: '#6a4ee6',
+  savedHover: '#7a5ff2',
+  savedLine: '#a892ff',
+  glow: 'rgba(124, 92, 255, 0.85)',
+  selectedLine: '#e3dbff',
+  selectedFill: '#2a2542',
+};
+
+export function createMap({ svgEl, canvasEl, topo, onCountryClick, onCountryHover, onMarkerClick, onMarkerHover, onPick }) {
   const svg = d3.select(svgEl);
+  const ctx = canvasEl.getContext('2d');
+  const hitCtx = document.createElement('canvas').getContext('2d');
   const all = topojson.feature(topo, topo.objects.countries).features;
   const features = all.filter(f => f.id !== '010'); // leave Antarctica off, like the reference
   features.forEach(f => { f.key = countryKey(f); });
   const byKey = new Map(features.map(f => [f.key, f]));
 
-  let width = 0, height = 0;
+  let width = 0, height = 0, dpr = 1;
   const projection = d3.geoMercator();
   const path = d3.geoPath(projection);
   let transform = d3.zoomIdentity;
   let picking = false;
   let selectedKey = null;
-  let savedCounts = new Map();
+  let hoverKey = null;
+  let savedSet = new Set();
   let markerData = [];
   let activeMarkerId = null;
   let pickPoint = null;
   let insets = { right: 0, bottom: 0 };
 
-  // ---- SVG structure
-  const defs = svg.append('defs');
-  const glowFilter = defs.append('filter').attr('id', 'country-glow')
-    .attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
-  const glowBlur = glowFilter.append('feGaussianBlur').attr('stdDeviation', 6);
+  // Cached geometry in projected coordinates: one Path2D per country, plus merged paths
+  // for "saved" and "not saved" so each layer is a single fill + stroke call.
+  const shapes = new Map(); // key -> { p: Path2D, b: [[x0,y0],[x1,y1]] }
+  let basePath = new Path2D();
+  let savedPath = new Path2D();
 
+  // ---- SVG overlay (markers + input)
   const zoomLayer = svg.append('g').attr('class', 'zoom-layer');
-  const gBase = zoomLayer.append('g').attr('class', 'countries-base');
-  const gGlow = zoomLayer.append('g').attr('class', 'glow-layer').attr('filter', 'url(#country-glow)');
-  const gSaved = zoomLayer.append('g').attr('class', 'countries-saved');
   const gMarkers = zoomLayer.append('g').attr('class', 'markers');
   const gPick = zoomLayer.append('g').attr('class', 'pick');
 
-  const countryPaths = gBase.selectAll('path.country')
-    .data(features, d => d.key)
-    .join('path')
-    .attr('class', 'country')
-    .attr('id', d => 'c-' + d.key)
-    .attr('data-key', d => d.key)
-    .on('mousemove', (event, d) => { if (!picking) onCountryHover?.(d.key, event); })
-    .on('mouseleave', () => onCountryHover?.(null))
-    .on('click', (event, d) => {
-      if (picking) return; // handled by svg click
-      onCountryClick?.(d.key);
-    });
+  // ---- Drawing
+  // The full map is rendered into an off-screen "cache" canvas that is larger than the screen
+  // (MARGIN on every side). Dragging just slides that bitmap, which costs almost nothing.
+  // The cache is re-rendered when the view moves past its edge, when zoom changes a lot, or
+  // shortly after zooming stops (so the borders are sharp again).
+  const MARGIN = 0.3;
+  const cache = document.createElement('canvas');
+  const cctx = cache.getContext('2d');
+  let cacheT = null;       // transform the cache was rendered at
+  let cacheDirty = true;   // colours / hover / selection changed
+  let sharpTimer = 0;
+  let frame = 0;
+
+  function requestDraw() {
+    if (!frame) frame = requestAnimationFrame(draw);
+  }
+  function invalidate() { cacheDirty = true; requestDraw(); }
+
+  function renderCache() {
+    const mx = width * MARGIN, my = height * MARGIN;
+    const cw = Math.round((width + 2 * mx) * dpr), ch = Math.round((height + 2 * my) * dpr);
+    if (cache.width !== cw || cache.height !== ch) { cache.width = cw; cache.height = ch; }
+    const { k, x, y } = transform;
+    cctx.setTransform(1, 0, 0, 1, 0, 0);
+    cctx.clearRect(0, 0, cw, ch);
+    cctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * (x + mx), dpr * (y + my));
+    paintScene(cctx, k);
+    cacheT = transform;
+    cacheDirty = false;
+  }
+
+  function draw() {
+    frame = 0;
+    zoomLayer.attr('transform', transform);
+    updateMarkerScale();
+
+    const { k, x, y } = transform;
+    let s = cacheT ? k / cacheT.k : 0;
+    const mx = width * MARGIN, my = height * MARGIN;
+    const placement = () => {
+      // where the cache's top-left corner lands on screen (CSS px), and its drawn size
+      const dx = x - s * (cacheT.x + mx), dy = y - s * (cacheT.y + my);
+      return { dx, dy, dw: s * (width + 2 * mx), dh: s * (height + 2 * my) };
+    };
+    let pl = cacheT && placement();
+    const covered = pl && pl.dx <= 0.5 && pl.dy <= 0.5 && pl.dx + pl.dw >= width - 0.5 && pl.dy + pl.dh >= height - 0.5;
+    if (cacheDirty || !cacheT || !covered || s > 1.5 || s < 0.7) {
+      renderCache(); s = 1; pl = placement();
+    }
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(cache, pl.dx * dpr, pl.dy * dpr, pl.dw * dpr, pl.dh * dpr);
+
+    // hover highlight is drawn on top, so moving the pointer never re-renders the whole map
+    const hs = hoverKey && shapes.get(hoverKey);
+    if (hs && hoverKey !== selectedKey) {
+      const saved = savedSet.has(hoverKey);
+      ctx.setTransform(dpr * k, 0, 0, dpr * k, dpr * x, dpr * y);
+      ctx.lineJoin = 'round';
+      ctx.fillStyle = saved ? C.savedHover : C.landHover; ctx.fill(hs.p);
+      ctx.strokeStyle = saved ? C.savedLine : C.landLine; ctx.lineWidth = (saved ? 0.8 : 0.6) / k; ctx.stroke(hs.p);
+    }
+
+    // after zooming, re-render at full sharpness once things settle
+    clearTimeout(sharpTimer);
+    if (Math.abs(s - 1) > 0.001) sharpTimer = setTimeout(invalidate, 140);
+  }
+
+  function paintScene(c, k) {
+    c.lineJoin = 'round';
+    c.fillStyle = C.land;
+    c.fill(basePath);
+    if (selectedKey && shapes.has(selectedKey) && !savedSet.has(selectedKey)) {
+      c.fillStyle = C.selectedFill; c.fill(shapes.get(selectedKey).p);
+    }
+    c.strokeStyle = C.landLine;
+    c.lineWidth = 0.6 / k;
+    c.stroke(basePath);
+
+    if (savedSet.size) {
+      // glow: shadow blur is in screen pixels, so it looks the same at every zoom level
+      c.save();
+      c.shadowColor = C.glow;
+      c.shadowBlur = 14 * dpr;
+      c.fillStyle = C.saved;
+      c.fill(savedPath);
+      c.restore();
+      c.strokeStyle = C.savedLine;
+      c.lineWidth = 0.8 / k;
+      c.stroke(savedPath);
+    }
+    if (selectedKey && shapes.has(selectedKey)) {
+      c.strokeStyle = C.selectedLine;
+      c.lineWidth = 1.4 / k;
+      c.stroke(shapes.get(selectedKey).p);
+    }
+  }
+
+  function rebuildGroups() {
+    basePath = new Path2D();
+    savedPath = new Path2D();
+    for (const f of features) {
+      const s = shapes.get(f.key);
+      if (s) (savedSet.has(f.key) ? savedPath : basePath).addPath(s.p);
+    }
+  }
+
+  // ---- Hit testing
+  function keyAtPointer(event) {
+    const [px, py] = d3.pointer(event, svgEl);
+    const [x, y] = transform.invert([px, py]);
+    for (const f of features) {
+      const s = shapes.get(f.key);
+      if (!s) continue;
+      const [[x0, y0], [x1, y1]] = s.b;
+      if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+      if (hitCtx.isPointInPath(s.p, x, y)) return f.key;
+    }
+    return null;
+  }
+
+  svg.on('pointermove.hover', (event) => {
+    if (event.buttons || picking) return; // skip hit testing while dragging
+    if (event.target.closest && event.target.closest('.marker')) return;
+    const key = keyAtPointer(event);
+    if (key !== hoverKey) { hoverKey = key; svgEl.style.cursor = key ? 'pointer' : ''; requestDraw(); }
+    onCountryHover?.(key, event);
+  });
+  svg.on('pointerleave.hover', () => {
+    if (hoverKey) { hoverKey = null; requestDraw(); }
+    onCountryHover?.(null);
+  });
+
+  svg.on('click.map', (event) => {
+    if (event.target.closest && event.target.closest('.marker')) return;
+    if (picking) {
+      const [px, py] = d3.pointer(event, svgEl);
+      const [x, y] = transform.invert([px, py]);
+      const lngLat = projection.invert([x, y]);
+      if (!lngLat || !isFinite(lngLat[0])) return;
+      onPick?.({ lng: round(lngLat[0]), lat: round(lngLat[1]), country: countryAt(lngLat[0], lngLat[1]) });
+      return;
+    }
+    const key = keyAtPointer(event);
+    if (key) onCountryClick?.(key);
+  });
+
+  function round(n) { return Math.round(n * 10000) / 10000; }
 
   // ---- Zoom
   const zoom = d3.zoom()
     .scaleExtent([1, 60])
     .clickDistance(5)
-    .on('zoom', (event) => {
-      transform = event.transform;
-      zoomLayer.attr('transform', transform);
-      glowBlur.attr('stdDeviation', 5.5 / transform.k);
-      updateMarkerScale();
-    });
+    .on('start', () => { if (hoverKey) { hoverKey = null; onCountryHover?.(null); } svgEl.classList.add('dragging'); })
+    .on('zoom', (event) => { transform = event.transform; requestDraw(); })
+    .on('end', () => svgEl.classList.remove('dragging'));
   svg.call(zoom).on('dblclick.zoom', null);
 
-  svg.on('click.pick', (event) => {
-    if (!picking) return;
-    const [px, py] = d3.pointer(event, svgEl);
-    const [x, y] = transform.invert([px, py]);
-    const lngLat = projection.invert([x, y]);
-    if (!lngLat || !isFinite(lngLat[0])) return;
-    onPick?.({ lng: round(lngLat[0]), lat: round(lngLat[1]), country: countryAt(lngLat[0], lngLat[1]) });
-  });
-
-  function round(n) { return Math.round(n * 10000) / 10000; }
-
   // ---- Layout
+  let homeTransform = d3.zoomIdentity;
   function resize() {
     const r = svgEl.getBoundingClientRect();
     width = Math.max(320, r.width);
     height = Math.max(320, r.height);
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvasEl.width = Math.round(width * dpr);
+    canvasEl.height = Math.round(height * dpr);
     svg.attr('viewBox', `0 0 ${width} ${height}`);
+
     // Fit to the inhabited band (about 56° S to 80° N) so the map fills the screen like a
     // wall map; the far Arctic islands run slightly past the edges.
     const padX = Math.min(40, width * 0.03);
     const padTop = Math.min(64, height * 0.08);
     const padBottom = Math.min(56, height * 0.07);
-    const frame = { type: 'MultiPoint', coordinates: [[-168, -56], [179, -56], [-168, 80], [179, 80]] };
-    projection.fitExtent([[padX, padTop], [width - padX, height - padBottom]], frame);
-    countryPaths.attr('d', path);
-    gGlow.selectAll('path').attr('d', d => path(d));
+    const frameGeo = { type: 'MultiPoint', coordinates: [[-168, -56], [179, -56], [-168, 80], [179, 80]] };
+    projection.fitExtent([[padX, padTop], [width - padX, height - padBottom]], frameGeo);
+
+    shapes.clear();
+    for (const f of features) {
+      const d = path(f);
+      if (d) shapes.set(f.key, { p: new Path2D(d), b: path.bounds(f) });
+    }
+    rebuildGroups();
+
     const m = Math.max(width, height);
     zoom.extent([[0, 0], [width, height]])
       .translateExtent([[-m * 0.6, -m * 0.6], [width + m * 0.6, height + m * 0.6]]);
@@ -96,11 +247,11 @@ export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarke
     renderPick();
     homeTransform = computeHome();
     svg.call(zoom.transform, homeTransform);
+    invalidate();
   }
 
   // On tall phone screens the whole world is a thin strip, so start zoomed in a little
   // (centred on Europe / Africa) to use the height. Wide screens show the whole world.
-  let homeTransform = d3.zoomIdentity;
   function computeHome() {
     const [[, y0], [, y1]] = path.bounds({ type: 'MultiPoint', coordinates: [[0, -56], [0, 80]] });
     const mapH = y1 - y0;
@@ -110,31 +261,15 @@ export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarke
     return d3.zoomIdentity.translate(width / 2 - k * c[0], height / 2 - k * c[1]).scale(k);
   }
 
-  // ---- Saved highlight
+  // ---- Saved highlight / selection
   function setSaved(counts) {
-    savedCounts = counts;
-    countryPaths.each(function (d) {
-      const isSaved = (counts.get(d.key) || 0) > 0;
-      this.classList.toggle('saved', isSaved);
-      const target = isSaved ? gSaved.node() : gBase.node();
-      if (this.parentNode !== target) target.appendChild(this);
-    });
-    gGlow.selectAll('path')
-      .data(features.filter(f => (counts.get(f.key) || 0) > 0), d => d.key)
-      .join('path')
-      .attr('d', d => path(d));
-    raiseSelected();
+    savedSet = new Set([...counts.entries()].filter(([, n]) => n > 0).map(([k]) => k));
+    rebuildGroups();
+    invalidate();
   }
-
   function setSelected(key) {
     selectedKey = key;
-    countryPaths.classed('selected', d => d.key === key);
-    raiseSelected();
-  }
-  function raiseSelected() {
-    if (!selectedKey) return;
-    const node = svgEl.querySelector('#c-' + CSS.escape(selectedKey));
-    if (node) node.parentNode.appendChild(node);
+    invalidate();
   }
 
   // ---- Markers
@@ -160,8 +295,8 @@ export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarke
           .attr('role', 'button')
           .on('click', (event, d) => { event.stopPropagation(); if (!picking) onMarkerClick?.(d.id); })
           .on('keydown', (event, d) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onMarkerClick?.(d.id); } })
-          .on('mousemove', (event, d) => onMarkerHover?.(d, event))
-          .on('mouseleave', () => onMarkerHover?.(null));
+          .on('pointermove', (event, d) => { if (!event.buttons) onMarkerHover?.(d, event); })
+          .on('pointerleave', () => onMarkerHover?.(null));
         g.append('circle').attr('class', 'm-halo').attr('r', 10);
         g.append('circle').attr('class', 'm-core').attr('r', 4.6);
         return g;
@@ -169,10 +304,7 @@ export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarke
     sel.attr('class', d => `marker t-${d.type}` + (d.id === activeMarkerId ? ' active' : ''))
       .attr('data-id', d => d.id)
       .attr('aria-label', d => d.title)
-      .each(function (d) {
-        const p = projection([d.lng, d.lat]);
-        this.__xy = p;
-      });
+      .each(function (d) { this.__xy = projection([d.lng, d.lat]); });
     updateMarkerScale();
   }
   function updateMarkerScale() {
@@ -196,6 +328,7 @@ export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarke
   function setPickMode(on, point = null) {
     picking = on;
     svg.classed('picking', on);
+    if (on && hoverKey) { hoverKey = null; requestDraw(); }
     pickPoint = point;
     renderPick();
   }
@@ -210,8 +343,8 @@ export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarke
   }
 
   function mainBounds(f) {
-    // For countries with far-away territories (France, USA, Norway…) zoom to the main landmass
-    // plus anything reasonably close to it.
+    // For countries with far-away territories (France, USA, Spain…) zoom to the main landmass
+    // plus anything close to it.
     const g = f.geometry;
     if (!g || g.type !== 'MultiPolygon') return path.bounds(f);
     const polys = g.coordinates.map(c => ({ type: 'Polygon', coordinates: c }));
@@ -263,9 +396,24 @@ export function createMap({ svgEl, topo, onCountryClick, onCountryHover, onMarke
     return null;
   }
 
+  // Screen position of a country's centre (used by tests and future features)
+  function screenPointOf(key) {
+    const f = byKey.get(key); if (!f) return null;
+    const [[x0, y0], [x1, y1]] = mainBounds(f);
+    const s = shapes.get(key);
+    // walk a small grid to find a point that is actually inside the shape
+    for (let i = 0; i <= 12; i++) for (let j = 0; j <= 12; j++) {
+      const ox = (i % 2 ? -1 : 1) * Math.ceil(i / 2) / 12, oy = (j % 2 ? -1 : 1) * Math.ceil(j / 2) / 12;
+      const x = (x0 + x1) / 2 + ox * (x1 - x0), y = (y0 + y1) / 2 + oy * (y1 - y0);
+      if (hitCtx.isPointInPath(s.p, x, y)) return transform.apply([x, y]);
+    }
+    return null;
+  }
+
   return {
     features, byKey, resize, setSaved, setSelected, setMarkers, setActiveMarker,
     setPickMode, showPickPoint, setInsets, zoomToCountry, focusPoint, resetView, zoomBy, countryAt,
+    screenPointOf,
     get isPicking() { return picking; },
   };
 }
