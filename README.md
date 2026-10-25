@@ -58,6 +58,28 @@ map to anyone else. Clearing site data for the page deletes it, so export a back
 and then. To use the same collection on your phone and laptop, export on one and import
 on the other.
 
+## Entries published with the site
+
+Entries in `assets/data/entries.json` (photos in `assets/images/<country>/`) show for
+everyone who opens the site. On a visitor’s first visit each one is copied into their
+browser, after which it behaves like any other entry: it can be edited or deleted, and a
+deleted one does not come back. To change a published entry, edit it in `entries.json`
+and raise its `rev` number; visitors who haven’t edited their copy get the update.
+
+Each entry looks like this (`country` is the ISO 3166-1 numeric code, e.g. `724` Spain):
+
+```json
+{
+  "id": "site-es-las-medulas", "type": "place", "title": "Las Médulas",
+  "country": "724", "location": "León", "lat": 42.45889, "lng": -6.76,
+  "notes": "", "tags": [], "links": [],
+  "images": [{ "src": "assets/images/spain/las-medulas.jpg" }],
+  "rev": 1, "date": "2026-10-25T13:00:00Z"
+}
+```
+
+`type` is one of `place`, `activity`, `memory` or `inspiration`.
+
 ## Files
 
 ```
@@ -69,6 +91,8 @@ assets/js/store.js          IndexedDB storage
 assets/js/examples.js       optional example entries (⋯ → Load example entries)
 assets/data/countries-50m.json   country borders (Natural Earth 1:50m, via world-atlas)
 assets/data/countries-meta.json  names, flags and regions per country
+assets/data/entries.json         entries published with the site (see above)
+assets/images/                   photos for those entries
 assets/vendor/              D3 v7 and topojson-client, included so no CDN is needed
 ```
 

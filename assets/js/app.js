@@ -17,6 +17,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2));
+const fold = (s) => String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase(); // accent-insensitive matching
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
 function fmtCoords(lat, lng) {
@@ -343,14 +344,14 @@ function renderLibrary() {
   const regions = [...new Set(countriesWith.map(k => state.meta[k]?.region).filter(Boolean))].sort();
   const tags = allTags();
 
-  const q = f.q.trim().toLowerCase();
+  const q = fold(f.q.trim());
   let list = all.filter(e => {
     if (f.type !== 'all' && e.type !== f.type) return false;
     if (f.country === 'none' ? e.country : (f.country !== 'all' && e.country !== f.country)) return false;
     if (f.region !== 'all' && state.meta[e.country]?.region !== f.region) return false;
     if (f.tag !== 'all' && !e.tags?.includes(f.tag)) return false;
     if (q) {
-      const hay = [e.title, e.location, e.notes, ...(e.tags || []), e.country ? countryName(e.country) : '', ...(e.links || []).map(l => l.url + ' ' + l.label)].join(' ').toLowerCase();
+      const hay = fold([e.title, e.location, e.notes, ...(e.tags || []), e.country ? countryName(e.country) : '', ...(e.links || []).map(l => l.url + ' ' + l.label)].join(' '));
       if (!q.split(/\s+/).every(w => hay.includes(w))) return false;
     }
     return true;
@@ -840,21 +841,21 @@ let searchItems = [];
 let searchIndex = -1;
 function runSearch() {
   const input = $('#search-input');
-  const q = input.value.trim().toLowerCase();
+  const q = fold(input.value.trim());
   const box = $('#search-results');
   if (!q) { closeSearch(); return; }
   const counts = new Map();
   entriesArr().forEach(e => e.country && counts.set(e.country, (counts.get(e.country) || 0) + 1));
 
   const countries = Object.entries(state.meta)
-    .filter(([, m]) => m.name.toLowerCase().includes(q))
-    .sort((a, b) => (a[1].name.toLowerCase().startsWith(q) ? 0 : 1) - (b[1].name.toLowerCase().startsWith(q) ? 0 : 1) || (counts.get(b[0]) || 0) - (counts.get(a[0]) || 0) || a[1].name.localeCompare(b[1].name))
+    .filter(([, m]) => fold(m.name).includes(q))
+    .sort((a, b) => (fold(a[1].name).startsWith(q) ? 0 : 1) - (fold(b[1].name).startsWith(q) ? 0 : 1) || (counts.get(b[0]) || 0) - (counts.get(a[0]) || 0) || a[1].name.localeCompare(b[1].name))
     .slice(0, 6);
   const words = q.split(/\s+/);
   const entries = entriesArr().filter(e => {
-    const hay = [e.title, e.location, e.notes, ...(e.tags || []), e.country ? countryName(e.country) : ''].join(' ').toLowerCase();
+    const hay = fold([e.title, e.location, e.notes, ...(e.tags || []), e.country ? countryName(e.country) : ''].join(' '));
     return words.every(w => hay.includes(w));
-  }).sort((a, b) => (a.title.toLowerCase().includes(q) ? 0 : 1) - (b.title.toLowerCase().includes(q) ? 0 : 1)).slice(0, 8);
+  }).sort((a, b) => (fold(a.title).includes(q) ? 0 : 1) - (fold(b.title).includes(q) ? 0 : 1)).slice(0, 8);
   const tags = allTags().filter(([t]) => t.includes(q.replace(/^#/, ''))).slice(0, 4);
 
   searchItems = [];

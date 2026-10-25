@@ -1,0 +1,157 @@
+{
+  "about": "Entries published with the site. Each visitor gets a copy they can edit or delete. Raise \"rev\" when you change an entry so unedited copies refresh.",
+  "entries": [
+    {
+      "id": "site-es-as-catedrais",
+      "title": "As Catedrais Beach",
+      "country": "724",
+      "location": "Galicia",
+      "lat": 43.55406,
+      "lng": -7.15723,
+      "images": [
+        {
+          "src": "assets/images/spain/as-catedrais-beach.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    },
+    {
+      "id": "site-es-setenil",
+      "title": "Setenil de las Bodegas",
+      "country": "724",
+      "location": "Andalusia",
+      "lat": 36.8625,
+      "lng": -5.18139,
+      "images": [
+        {
+          "src": "assets/images/spain/setenil-de-las-bodegas.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    },
+    {
+      "id": "site-es-bardenas-reales",
+      "title": "Bardenas Reales",
+      "country": "724",
+      "location": "Navarre",
+      "lat": 42.1878,
+      "lng": -1.4687,
+      "images": [
+        {
+          "src": "assets/images/spain/bardenas-reales.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    },
+    {
+      "id": "site-es-lakes-covadonga",
+      "title": "Lakes of Covadonga",
+      "country": "724",
+      "location": "Asturias",
+      "lat": 43.283,
+      "lng": -4.95,
+      "images": [
+        {
+          "src": "assets/images/spain/lakes-of-covadonga.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    },
+    {
+      "id": "site-es-las-medulas",
+      "title": "Las Médulas",
+      "country": "724",
+      "location": "León",
+      "lat": 42.45889,
+      "lng": -6.76,
+      "images": [
+        {
+          "src": "assets/images/spain/las-medulas.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    },
+    {
+      "id": "site-es-ordesa-valley",
+      "title": "Ordesa Valley",
+      "country": "724",
+      "location": "Pyrenees",
+      "lat": 42.67167,
+      "lng": 0.05556,
+      "images": [
+        {
+          "src": "assets/images/spain/ordesa-valley.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    },
+    {
+      "id": "site-tr-cappadocia",
+      "title": "Cappadocia",
+      "country": "792",
+      "location": "",
+      "lat": 38.64306,
+      "lng": 34.82889,
+      "images": [
+        {
+          "src": "assets/images/turkey/cappadocia.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    },
+    {
+      "id": "site-jo-petra",
+      "title": "Petra",
+      "country": "400",
+      "location": "",
+      "lat": 30.32896,
+      "lng": 35.44483,
+      "images": [
+        {
+          "src": "assets/images/jordan/petra.jpg"
+        }
+      ],
+      "type": "place",
+      "notes": "",
+      "tags": [],
+      "links": [],
+      "rev": 1,
+      "date": "2026-10-25T13:00:00Z"
+    }
+  ]
+}
