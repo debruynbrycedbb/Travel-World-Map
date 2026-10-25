@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Travel World Map</title>
+<meta name="description" content="A personal world map of places to visit, things to do and things to remember.">
+<meta name="theme-color" content="#07060d">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%2307060d' stroke='%237c5cff' stroke-width='2'/%3E%3Cg fill='none' stroke='%23b8a6ff' stroke-width='1.6'%3E%3Ccircle cx='16' cy='16' r='9'/%3E%3Cellipse cx='16' cy='16' rx='4' ry='9'/%3E%3Cpath d='M7 16h18M8.5 11.5h15M8.5 20.5h15'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="assets/css/styles.css">
+</head>
+<body>
+<!--APP-START-->
+<div class="app" id="app">
+  <div class="map-stage" id="map-stage">
+    <svg id="map" class="map" role="img" aria-label="World map. Click a country to open its page."></svg>
+    <div class="map-loading" id="map-loading">Loading map…</div>
+  </div>
+  <div class="grain" aria-hidden="true"></div>
+
+  <!-- Top bar -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="mark" id="btn-home" type="button" aria-label="Back to full world view" title="World view">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="16" cy="16" r="10"/><ellipse cx="16" cy="16" rx="4.4" ry="10"/><path d="M6 16h20M7.6 11h16.8M7.6 21h16.8"/></g></svg>
+      </button>
+      <div class="search" id="search">
+        <svg class="search-icon" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M13.5 13.5 17 17" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input id="search-input" type="search" placeholder="Search countries, places, tags" autocomplete="off" aria-label="Search countries, places and tags" aria-controls="search-results" aria-expanded="false">
+        <kbd class="search-kbd" aria-hidden="true">/</kbd>
+        <div class="search-results" id="search-results" role="listbox" hidden></div>
+      </div>
+    </div>
+    <nav class="topbar-right">
+      <button class="pill-btn" id="btn-library" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 4.5h4v11h-4zM8.5 4.5h4v11h-4zM13.6 5.2l3.3-.9 2.6 10.6-3.3.9z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+        <span>Library</span>
+      </button>
+      <button class="pill-btn pill-accent" id="btn-quick-save" type="button">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <span>Save</span>
+      </button>
+      <div class="menu-wrap">
+        <button class="icon-btn" id="btn-menu" type="button" aria-label="More options" aria-haspopup="true" aria-expanded="false">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4.5" cy="10" r="1.5" fill="currentColor"/><circle cx="10" cy="10" r="1.5" fill="currentColor"/><circle cx="15.5" cy="10" r="1.5" fill="currentColor"/></svg>
+        </button>
+        <div class="menu" id="menu" role="menu" hidden>
+          <button type="button" role="menuitem" data-action="export">Export backup (.json)</button>
+          <button type="button" role="menuitem" data-action="import">Import backup…</button>
+          <button type="button" role="menuitem" data-action="examples">Load example entries</button>
+          <button type="button" role="menuitem" data-action="clear-examples">Remove example entries</button>
+          <div class="menu-note" id="storage-note"></div>
+        </div>
+        <input type="file" id="import-file" accept="application/json,.json" hidden>
+      </div>
+    </nav>
+  </header>
+
+  <!-- Map filters + zoom -->
+  <div class="map-filters" id="map-filters" role="group" aria-label="Show on map"></div>
+  <div class="zoom-controls" role="group" aria-label="Map zoom">
+    <button class="icon-btn" id="zoom-in" type="button" aria-label="Zoom in"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    <button class="icon-btn" id="zoom-out" type="button" aria-label="Zoom out"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+    <button class="icon-btn" id="zoom-reset" type="button" aria-label="Reset view"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 7.5V3.5h4M16.5 7.5V3.5h-4M3.5 12.5v4h4M16.5 12.5v4h-4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+  </div>
+
+  <div class="tooltip" id="tooltip" role="status" hidden></div>
+  <div class="pick-banner" id="pick-banner" hidden>
+    <span>Click the map to set the location</span>
+    <button class="text-btn" id="pick-cancel" type="button">Cancel</button>
+  </div>
+  <div class="onboard" id="onboard" hidden>
+    <p class="onboard-title">Your map is empty</p>
+    <p>Click any country to open its page and save places, things to do and things to remember. Saved countries light up.</p>
+    <div class="onboard-actions">
+      <button class="pill-btn pill-accent" type="button" data-onboard="save">Save something</button>
+      <button class="pill-btn" type="button" data-onboard="examples">Try example entries</button>
+    </div>
+  </div>
+
+  <!-- Country page -->
+  <aside class="panel" id="country-panel" aria-labelledby="country-name" hidden>
+    <div class="panel-inner" id="country-content"></div>
+  </aside>
+
+  <!-- Library page -->
+  <section class="library" id="library" aria-labelledby="library-title" hidden>
+    <div class="library-inner" id="library-content"></div>
+  </section>
+
+  <!-- Dialogs -->
+  <dialog class="dialog dialog-wide" id="entry-dialog" aria-label="Saved entry"></dialog>
+  <dialog class="dialog dialog-wide" id="editor-dialog" aria-label="Edit entry"></dialog>
+  <dialog class="dialog" id="quick-dialog" aria-label="Quick save"></dialog>
+  <dialog class="dialog dialog-small" id="confirm-dialog" aria-label="Confirm"></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+</div>
+<!--APP-END-->
+<script src="assets/vendor/d3.min.js"></script>
+<script src="assets/vendor/topojson-client.min.js"></script>
+<script type="module" src="assets/js/app.js"></script>
+</body>
+</html>
